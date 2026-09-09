@@ -1,9 +1,9 @@
-name: Firmware build
+﻿name: Firmware build
 on:
   push:
-    paths: ["firmware/**", ".github/workflows/firmware.yml"]
+    paths: ["firmware/**", "web-flasher/**", ".github/workflows/firmware.yml"]
   pull_request:
-    paths: ["firmware/**", ".github/workflows/firmware.yml"]
+    paths: ["firmware/**", "web-flasher/**", ".github/workflows/firmware.yml"]
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -14,11 +14,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python test/check_web_ui.py
+      - run: python test/check_reliability.py
       - run: . /opt/esp/idf/export.sh && idf.py build
+      - run: python tools/release_manifest.py --version ci-${GITHUB_SHA::12} --git-sha $GITHUB_SHA --output build/release
       - uses: actions/upload-artifact@v4
         with:
           name: metechcam-firmware
-          path: |
-            firmware/esp32/build/metech_capture.bin
-            firmware/esp32/build/flasher_args.json
+          path: firmware/esp32/build/release
           if-no-files-found: error

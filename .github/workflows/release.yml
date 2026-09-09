@@ -1,4 +1,4 @@
-name: Release artifacts
+﻿name: Release artifacts
 on:
   workflow_dispatch:
   push:
@@ -13,10 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python test/check_web_ui.py
+      - run: python test/check_reliability.py
       - run: . /opt/esp/idf/export.sh && idf.py build
-      - run: sha256sum build/metech_capture.bin > build/metech_capture.bin.sha256
+      - run: python tools/release_manifest.py --version $GITHUB_REF_NAME --git-sha $GITHUB_SHA --output build/release
       - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            firmware/esp32/build/metech_capture.bin
-            firmware/esp32/build/metech_capture.bin.sha256
+          files: firmware/esp32/build/release/*
