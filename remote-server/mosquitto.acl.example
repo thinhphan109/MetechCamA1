@@ -1,0 +1,4 @@
+﻿user metech-cam
+ topic read metech/cam/command
+ topic write metech/cam/status
+ topic write metech/cam/ack
