@@ -196,9 +196,40 @@ class DeviceCheck:
             if after_total != before_total + 3 or len(after_names - before_names) < 3:
                 raise CheckFailure(f"capture must add exactly three images; total {before_total} to {after_total}")
 
-    def run(self, capture: bool, soak_seconds: int | None) -> int:
+    def standby(self) -> None:
+        if self.json_get("/api/timelapse").get("active"):
+            raise CheckFailure("refusing standby test: device has active timelapse")
+        status = self.json_get("/api/status")
+        if status.get("camera_state") != "active":
+            raise CheckFailure(f"standby test requires active camera, got {status.get('camera_state')!r}")
+        sleeping = False
+        try:
+            self.expect("POST", "/api/camera/standby", 200, {})
+            sleeping = True
+            status = self.json_get("/api/status")
+            if status.get("camera_state") != "standby" or status.get("wifi") != "connected":
+                raise CheckFailure("camera standby did not retain Wi-Fi or report standby")
+            self.expect("GET", "/snapshot.jpg", 500)
+            self.expect("POST", "/api/timelapse/start", 409, {"interval": "5", "limit": "1"})
+            self.log("camera_standby", True)
+        finally:
+            if sleeping:
+                self.expect("POST", "/api/camera/wake", 200, {})
+                time.sleep(2)
+                status = self.json_get("/api/status")
+                if status.get("camera_state") != "active":
+                    raise CheckFailure("camera did not return active after wake")
+                code, headers, image = self.request("GET", "/snapshot.jpg")
+                if code != 200 or not headers.get("Content-Type", "").lower().startswith("image/jpeg"):
+                    raise CheckFailure("camera JPEG did not return after wake")
+                self.jpeg_dimensions(image)
+                self.log("camera_wake", True)
+
+    def run(self, capture: bool, soak_seconds: int | None, standby: bool) -> int:
         try:
             self.readonly()
+            if standby:
+                self.standby()
             if capture:
                 self.capture(soak_seconds)
         except CheckFailure as error:
@@ -215,6 +246,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("base_url", help="Device base URL, e.g. http://192.168.4.1")
     parser.add_argument("--capture", action="store_true", help="Permit bounded timelapse verification")
+    parser.add_argument("--standby", action="store_true", help="Permit camera standby/wake lifecycle verification")
     parser.add_argument("--soak-seconds", type=int, metavar="SECONDS", help="Explicit 1..3600 endurance run; requires --capture")
     parser.add_argument("--output", type=Path, required=True, help="JSONL metrics output path")
     parser.add_argument("--timeout", type=float, default=10, help="Per-request timeout seconds")
@@ -226,7 +258,7 @@ def main() -> int:
             parser.error("--soak-seconds requires --capture")
         if not 1 <= args.soak_seconds <= 3600:
             parser.error("--soak-seconds must be between 1 and 3600")
-    return DeviceCheck(args.base_url, args.output, args.timeout).run(args.capture, args.soak_seconds)
+    return DeviceCheck(args.base_url, args.output, args.timeout).run(args.capture, args.soak_seconds, args.standby)
 
 
 if __name__ == "__main__":

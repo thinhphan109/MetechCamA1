@@ -68,6 +68,7 @@ static uint32_t preview_delay_ms = 400;
 typedef struct { bool active, stopping, in_flight; uint32_t interval_s, limit, taken; uint64_t next_us; char state[16], error[40]; } timelapse_t;
 static timelapse_t timelapse = {.state="idle"};
 static volatile bool timelapse_capture_pending;
+static bool camera_active;
 static TaskHandle_t timelapse_task_handle;
 typedef struct { uint32_t at_s; char text[48]; } event_t;
 static event_t events[24]; static uint8_t event_head, event_count;
@@ -96,6 +97,18 @@ static bool form_only_keys(const char *body, const char *first, const char *seco
         part = *end ? end + 1 : end;
     }
     return true;
+}
+
+static camera_config_t camera_config(void);
+static void configure_camera(sensor_t *sensor);
+static bool camera_is_busy(void) { return timelapse.active || timelapse.stopping || timelapse.in_flight; }
+static esp_err_t start_camera(void) {
+    camera_config_t config = camera_config();
+    esp_err_t err = esp_camera_init(&config);
+    if (err != ESP_OK) return err;
+    configure_camera(esp_camera_sensor_get());
+    camera_active = true;
+    return ESP_OK;
 }
 
 static camera_config_t camera_config(void) {
@@ -267,6 +280,7 @@ failed: if (strcmp(sd_state, "healthcheck failed") == 0) strcpy(sd_state, "healt
 }
 
 static esp_err_t capture_to_sd(char *saved, size_t saved_size) {
+    if (!camera_active) return ESP_ERR_INVALID_STATE;
     if (!sd_ready) return ESP_ERR_INVALID_STATE;
     if (xSemaphoreTake(camera_lock, pdMS_TO_TICKS(5000)) != pdTRUE) return ESP_ERR_TIMEOUT;
     sensor_t *sensor = esp_camera_sensor_get(); sensor->set_framesize(sensor, FRAMESIZE_QSXGA); camera_fb_t *frame = esp_camera_fb_get();
@@ -289,9 +303,9 @@ static esp_err_t capture_to_sd(char *saved, size_t saved_size) {
 }
 
 static esp_err_t index_handler(httpd_req_t *r) { httpd_resp_set_type(r, "text/html; charset=utf-8"); return httpd_resp_send(r, METECH_WEB_UI, HTTPD_RESP_USE_STRLEN); }
-static esp_err_t status_handler(httpd_req_t *r) { char body[900];uint64_t uptime=esp_timer_get_time()/1000000ULL,freeb=0,total=0;storage_info(&freeb,&total);uint64_t estimate=tl_estimate(capture_bytes_total,gallery_images);int n=snprintf(body,sizeof(body),"{\"width\":1280,\"height\":1024,\"captures\":%" PRIu32 ",\"wifi\":\"%s\",\"ip\":\"%s\",\"ssid\":\"%s\",\"ap\":{\"ssid\":\"%s\",\"ip\":\"%s\"},\"lan\":{\"state\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\"},\"sd\":\"%s\",\"sd_ready\":%s,\"saved\":%" PRIu32 ",\"images\":%" PRIu32 ",\"tmp_cleaned\":%" PRIu32 ",\"uptime_s\":%" PRIu64 ",\"resolution\":\"2592x1944\",\"camera_mode\":\"live settings\",\"autofocus\":\"%s\",\"sd_free_bytes\":%" PRIu64 ",\"sd_total_bytes\":%" PRIu64 ",\"estimated_images_left\":%" PRIu64 ",\"capture_failures\":%" PRIu32 ",\"preview\":{\"mode\":\"%s\",\"delay_ms\":%" PRIu32 ",\"fps_x10\":%" PRIu32 "}}",preview_captures,wifi_state,wifi_ip,wifi_ssid,METECH_AP_SSID,ap_ip,wifi_state,wifi_ssid,wifi_ip,sd_state,sd_ready?"true":"false",saved_captures,gallery_images,cleaned_tmp_files,uptime,autofocus_status,freeb,total,estimate?freeb/estimate:0,capture_failures,preview_mode_name(),preview_delay_ms,preview_fps_x10);httpd_resp_set_type(r,"application/json");return httpd_resp_send(r,body,n); }
+static esp_err_t status_handler(httpd_req_t *r) { char body[900];uint64_t uptime=esp_timer_get_time()/1000000ULL,freeb=0,total=0;storage_info(&freeb,&total);uint64_t estimate=tl_estimate(capture_bytes_total,gallery_images);int n=snprintf(body,sizeof(body),"{\"width\":1280,\"height\":1024,\"captures\":%" PRIu32 ",\"wifi\":\"%s\",\"ip\":\"%s\",\"ssid\":\"%s\",\"ap\":{\"ssid\":\"%s\",\"ip\":\"%s\"},\"lan\":{\"state\":\"%s\",\"ssid\":\"%s\",\"ip\":\"%s\"},\"sd\":\"%s\",\"sd_ready\":%s,\"saved\":%" PRIu32 ",\"images\":%" PRIu32 ",\"tmp_cleaned\":%" PRIu32 ",\"uptime_s\":%" PRIu64 ",\"resolution\":\"2592x1944\",\"camera_mode\":\"live settings\",\"camera_state\":\"%s\",\"autofocus\":\"%s\",\"sd_free_bytes\":%" PRIu64 ",\"sd_total_bytes\":%" PRIu64 ",\"estimated_images_left\":%" PRIu64 ",\"capture_failures\":%" PRIu32 ",\"preview\":{\"mode\":\"%s\",\"delay_ms\":%" PRIu32 ",\"fps_x10\":%" PRIu32 "}}",preview_captures,wifi_state,wifi_ip,wifi_ssid,METECH_AP_SSID,ap_ip,wifi_state,wifi_ssid,wifi_ip,sd_state,sd_ready?"true":"false",saved_captures,gallery_images,cleaned_tmp_files,uptime,camera_active?"active":"standby",autofocus_status,freeb,total,estimate?freeb/estimate:0,capture_failures,preview_mode_name(),preview_delay_ms,preview_fps_x10);httpd_resp_set_type(r,"application/json");return httpd_resp_send(r,body,n); }
 
-static esp_err_t jpeg_handler(httpd_req_t *r, framesize_t size) { if (timelapse_capture_pending) return httpd_resp_send_err(r, HTTPD_500_INTERNAL_SERVER_ERROR, "Timelapse capture in progress"); if (xSemaphoreTake(camera_lock, pdMS_TO_TICKS(3000)) != pdTRUE) return httpd_resp_send_err(r, HTTPD_500_INTERNAL_SERVER_ERROR, "Camera busy"); if (timelapse_capture_pending) { xSemaphoreGive(camera_lock); return httpd_resp_send_err(r, HTTPD_500_INTERNAL_SERVER_ERROR, "Timelapse capture in progress"); } sensor_t *s = esp_camera_sensor_get(); s->set_framesize(s,size); camera_fb_t *f=esp_camera_fb_get(); if(!f){s->set_framesize(s,FRAMESIZE_SXGA);xSemaphoreGive(camera_lock);return httpd_resp_send_err(r,HTTPD_500_INTERNAL_SERVER_ERROR,"Capture failed");} httpd_resp_set_type(r,"image/jpeg"); httpd_resp_set_hdr(r,"Cache-Control","no-store"); esp_err_t e=httpd_resp_send(r,(const char*)f->buf,f->len); esp_camera_fb_return(f);s->set_framesize(s,FRAMESIZE_SXGA);xSemaphoreGive(camera_lock);return e; }
+static esp_err_t jpeg_handler(httpd_req_t *r, framesize_t size) { if (!camera_active) return httpd_resp_send_err(r, HTTPD_500_INTERNAL_SERVER_ERROR, "Camera standby"); if (timelapse_capture_pending) return httpd_resp_send_err(r, HTTPD_500_INTERNAL_SERVER_ERROR, "Timelapse capture in progress"); if (xSemaphoreTake(camera_lock, pdMS_TO_TICKS(3000)) != pdTRUE) return httpd_resp_send_err(r, HTTPD_500_INTERNAL_SERVER_ERROR, "Camera busy"); if (timelapse_capture_pending) { xSemaphoreGive(camera_lock); return httpd_resp_send_err(r, HTTPD_500_INTERNAL_SERVER_ERROR, "Timelapse capture in progress"); } sensor_t *s = esp_camera_sensor_get(); s->set_framesize(s,size); camera_fb_t *f=esp_camera_fb_get(); if(!f){s->set_framesize(s,FRAMESIZE_SXGA);xSemaphoreGive(camera_lock);return httpd_resp_send_err(r,HTTPD_500_INTERNAL_SERVER_ERROR,"Capture failed");} httpd_resp_set_type(r,"image/jpeg"); httpd_resp_set_hdr(r,"Cache-Control","no-store"); esp_err_t e=httpd_resp_send(r,(const char*)f->buf,f->len); esp_camera_fb_return(f);s->set_framesize(s,FRAMESIZE_SXGA);xSemaphoreGive(camera_lock);return e; }
 static esp_err_t snapshot_handler(httpd_req_t *r) { esp_err_t e=jpeg_handler(r,preview_size); if(e==ESP_OK){preview_captures++;uint64_t now=esp_timer_get_time();if(!preview_window_us||now-preview_window_us>=5000000ULL){preview_fps_x10=preview_window_us?(uint32_t)(preview_window_frames*100000000ULL/(now-preview_window_us)):0;preview_window_us=now;preview_window_frames=0;}preview_window_frames++;}return e; }
 static esp_err_t still_handler(httpd_req_t *r) { return jpeg_handler(r,FRAMESIZE_QSXGA); }
 static esp_err_t gallery_handler(httpd_req_t *r) {
@@ -374,6 +388,7 @@ static esp_err_t camera_settings_update_handler(httpd_req_t *r) {
         return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Camera setting out of range");
     }
     if (xSemaphoreTake(camera_lock, pdMS_TO_TICKS(3000)) != pdTRUE) return httpd_resp_send_err(r, HTTPD_500_INTERNAL_SERVER_ERROR, "Camera busy");
+    if (!camera_active) { xSemaphoreGive(camera_lock); return send_status(r, "409 Conflict", "Camera standby"); }
     camera_settings = next;
     esp_err_t err = apply_camera_settings();
     xSemaphoreGive(camera_lock);
@@ -392,6 +407,7 @@ static esp_err_t camera_profile_handler(httpd_req_t *r) {
     else if (!strcmp(profile, "neutral")) camera_settings = (camera_settings_t){.brightness = 0, .contrast = 0, .saturation = 0, .sharpness = 0, .quality = 10, .awb = true, .exposure = true, .gain = true};
     else return httpd_resp_send_err(r, HTTPD_400_BAD_REQUEST, "Unknown camera profile");
     if (xSemaphoreTake(camera_lock, pdMS_TO_TICKS(3000)) != pdTRUE) return httpd_resp_send_err(r, HTTPD_500_INTERNAL_SERVER_ERROR, "Camera busy");
+    if (!camera_active) { xSemaphoreGive(camera_lock); return send_status(r, "409 Conflict", "Camera standby"); }
     esp_err_t err = apply_camera_settings();
     xSemaphoreGive(camera_lock);
     if (err != ESP_OK) return httpd_resp_send_err(r, HTTPD_500_INTERNAL_SERVER_ERROR, "Could not apply camera profile");
@@ -418,6 +434,7 @@ static esp_err_t timelapse_start_handler(httpd_req_t *r) {
     int has_limit = tl_form_value(form, "limit", value, sizeof(value));
     if (has_limit < 0 || (has_limit == 1 && !tl_parse_u32(value, 999999, &limit)))
         return send_status(r, "400 Bad Request", "Invalid limit");
+    if (!camera_active) return send_status(r, "409 Conflict", "Wake camera before timelapse");
     if (!storage_can_capture()) return send_status(r, "507 Insufficient Storage", "microSD low space");
     xSemaphoreTake(timelapse_lock, portMAX_DELAY);
     if (timelapse.active || timelapse.stopping) {
@@ -434,8 +451,26 @@ static esp_err_t timelapse_stop_handler(httpd_req_t *r){xSemaphoreTake(timelapse
 static esp_err_t preview_handler(httpd_req_t *r){char body[100];snprintf(body,sizeof(body),"{\"mode\":\"%s\",\"delay_ms\":%" PRIu32 ",\"fps_x10\":%" PRIu32 "}",preview_mode_name(),preview_delay_ms,preview_fps_x10);httpd_resp_set_type(r,"application/json");return httpd_resp_sendstr(r,body);}
 static esp_err_t preview_update_handler(httpd_req_t *r){char body[40],mode[16];if(recv_form(r,body,sizeof(body))!=ESP_OK||tl_form_value(body,"mode",mode,sizeof(mode))!=1)return send_status(r,"400 Bad Request","Invalid preview");if(!strcmp(mode,"eco"))preview_set(PREVIEW_ECO);else if(!strcmp(mode,"normal"))preview_set(PREVIEW_NORMAL);else if(!strcmp(mode,"smooth"))preview_set(PREVIEW_SMOOTH);else if(!strcmp(mode,"fast"))preview_set(PREVIEW_FAST);else return send_status(r,"400 Bad Request","Unknown preview");event_add("Preview mode changed");return preview_handler(r);}
 static esp_err_t events_handler(httpd_req_t *r){char body[1800];size_t used=(size_t)snprintf(body,sizeof(body),"{\"events\":[");for(uint8_t i=0;i<event_count&&used+90<sizeof(body);i++){event_t *e=&events[(event_head+24-event_count+i)%24];used+=(size_t)snprintf(body+used,sizeof(body)-used,"%s{\"at_s\":%" PRIu32 ",\"text\":\"%s\"}",i?",":"",e->at_s,e->text);}used+=(size_t)snprintf(body+used,sizeof(body)-used,"]}");httpd_resp_set_type(r,"application/json");return httpd_resp_send(r,body,used);}
+static esp_err_t camera_standby_handler(httpd_req_t *r) {
+    if (camera_is_busy()) return send_status(r, "409 Conflict", "Stop timelapse before standby");
+    if (xSemaphoreTake(camera_lock, pdMS_TO_TICKS(5000)) != pdTRUE) return send_status(r, "503 Service Unavailable", "Camera busy");
+    if (!camera_active) { xSemaphoreGive(camera_lock); return send_status(r, "409 Conflict", "Camera already standby"); }
+    esp_err_t err = esp_camera_deinit();
+    if (err == ESP_OK) { camera_active = false; event_add("Camera standby"); }
+    xSemaphoreGive(camera_lock);
+    return err == ESP_OK ? httpd_resp_sendstr(r, "Camera standby") : send_status(r, "500 Internal Server Error", "Camera standby failed");
+}
+static esp_err_t camera_wake_handler(httpd_req_t *r) {
+    if (camera_is_busy()) return send_status(r, "409 Conflict", "Timelapse active");
+    if (xSemaphoreTake(camera_lock, pdMS_TO_TICKS(5000)) != pdTRUE) return send_status(r, "503 Service Unavailable", "Camera busy");
+    if (camera_active) { xSemaphoreGive(camera_lock); return send_status(r, "409 Conflict", "Camera already active"); }
+    esp_err_t err = start_camera();
+    if (err == ESP_OK) event_add("Camera awake");
+    xSemaphoreGive(camera_lock);
+    return err == ESP_OK ? httpd_resp_sendstr(r, "Camera awake") : send_status(r, "500 Internal Server Error", "Camera wake failed");
+}
 static esp_err_t capture_handler(httpd_req_t *r) { if(!storage_can_capture())return send_status(r,"507 Insufficient Storage","microSD low space"); char path[96]; esp_err_t e=capture_to_sd(path,sizeof(path)); if(e!=ESP_OK)return httpd_resp_send_err(r,HTTPD_500_INTERNAL_SERVER_ERROR,"SD capture failed"); return httpd_resp_sendstr(r,path + strlen(METECH_SD_MOUNT) + 1); }
 
-static void start_http_server(void) { httpd_handle_t server; httpd_config_t c=HTTPD_DEFAULT_CONFIG(); c.max_uri_handlers=18; c.uri_match_fn=httpd_uri_match_wildcard; ESP_ERROR_CHECK(httpd_start(&server,&c)); const httpd_uri_t u[]={ {.uri="/",.method=HTTP_GET,.handler=index_handler},{.uri="/api/status",.method=HTTP_GET,.handler=status_handler},{.uri="/api/gallery",.method=HTTP_GET,.handler=gallery_handler},{.uri="/api/events",.method=HTTP_GET,.handler=events_handler},{.uri="/image/*",.method=HTTP_GET,.handler=image_handler},{.uri="/snapshot.jpg",.method=HTTP_GET,.handler=snapshot_handler},{.uri="/still.jpg",.method=HTTP_GET,.handler=still_handler},{.uri="/api/wifi",.method=HTTP_POST,.handler=wifi_handler},{.uri="/api/capture",.method=HTTP_POST,.handler=capture_handler},{.uri="/api/preview",.method=HTTP_GET,.handler=preview_handler},{.uri="/api/preview",.method=HTTP_POST,.handler=preview_update_handler},{.uri="/api/timelapse",.method=HTTP_GET,.handler=timelapse_handler},{.uri="/api/timelapse/start",.method=HTTP_POST,.handler=timelapse_start_handler},{.uri="/api/timelapse/stop",.method=HTTP_POST,.handler=timelapse_stop_handler},{.uri="/api/camera-settings",.method=HTTP_GET,.handler=camera_settings_handler},{.uri="/api/camera-settings",.method=HTTP_POST,.handler=camera_settings_update_handler},{.uri="/api/camera-profile",.method=HTTP_POST,.handler=camera_profile_handler},{.uri="/api/camera-settings/save",.method=HTTP_POST,.handler=camera_settings_save_handler} }; for(size_t i=0;i<sizeof(u)/sizeof(u[0]);i++) ESP_ERROR_CHECK(httpd_register_uri_handler(server,&u[i])); }
+static void start_http_server(void) { httpd_handle_t server; httpd_config_t c=HTTPD_DEFAULT_CONFIG(); c.max_uri_handlers=20; c.uri_match_fn=httpd_uri_match_wildcard; ESP_ERROR_CHECK(httpd_start(&server,&c)); const httpd_uri_t u[]={ {.uri="/",.method=HTTP_GET,.handler=index_handler},{.uri="/api/status",.method=HTTP_GET,.handler=status_handler},{.uri="/api/gallery",.method=HTTP_GET,.handler=gallery_handler},{.uri="/api/events",.method=HTTP_GET,.handler=events_handler},{.uri="/image/*",.method=HTTP_GET,.handler=image_handler},{.uri="/snapshot.jpg",.method=HTTP_GET,.handler=snapshot_handler},{.uri="/still.jpg",.method=HTTP_GET,.handler=still_handler},{.uri="/api/wifi",.method=HTTP_POST,.handler=wifi_handler},{.uri="/api/capture",.method=HTTP_POST,.handler=capture_handler},{.uri="/api/camera/standby",.method=HTTP_POST,.handler=camera_standby_handler},{.uri="/api/camera/wake",.method=HTTP_POST,.handler=camera_wake_handler},{.uri="/api/preview",.method=HTTP_GET,.handler=preview_handler},{.uri="/api/preview",.method=HTTP_POST,.handler=preview_update_handler},{.uri="/api/timelapse",.method=HTTP_GET,.handler=timelapse_handler},{.uri="/api/timelapse/start",.method=HTTP_POST,.handler=timelapse_start_handler},{.uri="/api/timelapse/stop",.method=HTTP_POST,.handler=timelapse_stop_handler},{.uri="/api/camera-settings",.method=HTTP_GET,.handler=camera_settings_handler},{.uri="/api/camera-settings",.method=HTTP_POST,.handler=camera_settings_update_handler},{.uri="/api/camera-profile",.method=HTTP_POST,.handler=camera_profile_handler},{.uri="/api/camera-settings/save",.method=HTTP_POST,.handler=camera_settings_save_handler} }; for(size_t i=0;i<sizeof(u)/sizeof(u[0]);i++) ESP_ERROR_CHECK(httpd_register_uri_handler(server,&u[i])); }
 
-void app_main(void) { timelapse_lock=xSemaphoreCreateMutex(); if(!timelapse_lock)return; if(!esp_psram_is_initialized()){ESP_LOGE(TAG,"PSRAM unavailable");return;} start_wifi(); camera_config_t c=camera_config(); ESP_ERROR_CHECK(esp_camera_init(&c)); configure_camera(esp_camera_sensor_get()); camera_lock=xSemaphoreCreateMutex(); if(!camera_lock)return; init_sd(); xTaskCreate(timelapse_task,"timelapse",4096,NULL,5,&timelapse_task_handle); start_http_server(); ESP_LOGI(TAG,"Camera ready; home Wi-Fi and microSD status available in WebUI"); }
+void app_main(void) { timelapse_lock=xSemaphoreCreateMutex(); if(!timelapse_lock)return; if(!esp_psram_is_initialized()){ESP_LOGE(TAG,"PSRAM unavailable");return;} start_wifi(); camera_lock=xSemaphoreCreateMutex(); if(!camera_lock)return; ESP_ERROR_CHECK(start_camera()); init_sd(); xTaskCreate(timelapse_task,"timelapse",4096,NULL,5,&timelapse_task_handle); start_http_server(); ESP_LOGI(TAG,"Camera ready; home Wi-Fi and microSD status available in WebUI"); }
