@@ -1,0 +1,31 @@
+# Python / desktop outputs
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# User-generated media and local projects
+*.mp4
+*.zip
+*.part
+Timelapse1mau/
+__MACOSX/
+MetechTimelapse-Windows/
+
+# ESP-IDF generated and local state
+firmware/esp32/build/
+firmware/esp32/managed_components/
+firmware/esp32/sdkconfig
+firmware/esp32/sdkconfig.old
+firmware/esp32/ui_preview/
+firmware/esp32/*.expand
+metech_capture/
+
+# Local credentials / IDE
+firmware/esp32/main/local_defaults.h
+.env
+.vscode/
+.idea/
+*.user

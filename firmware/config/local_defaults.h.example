@@ -1,0 +1,6 @@
+#pragma once
+
+// Copy this file to firmware/esp32/main/local_defaults.h. Git ignores that file.
+// Do not commit real Wi-Fi credentials.
+#define METECH_RECOVERY_AP_SSID "MetechCam-Setup"
+#define METECH_RECOVERY_AP_PASSWORD "choose-a-private-password"

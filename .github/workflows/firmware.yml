@@ -1,0 +1,23 @@
+name: Firmware build
+on:
+  push:
+    paths: ["firmware/**", ".github/workflows/firmware.yml"]
+  pull_request:
+    paths: ["firmware/**", ".github/workflows/firmware.yml"]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5.5
+    defaults:
+      run:
+        working-directory: firmware/esp32
+    steps:
+      - uses: actions/checkout@v4
+      - run: idf.py build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metechcam-firmware
+          path: |
+            firmware/esp32/build/metech_capture.bin
+            firmware/esp32/build/flasher_args.json
+          if-no-files-found: error

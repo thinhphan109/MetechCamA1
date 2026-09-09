@@ -1,0 +1,21 @@
+name: Release artifacts
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5.5
+    defaults:
+      run:
+        working-directory: firmware/esp32
+    steps:
+      - uses: actions/checkout@v4
+      - run: idf.py build
+      - run: sha256sum build/metech_capture.bin > build/metech_capture.bin.sha256
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            firmware/esp32/build/metech_capture.bin
+            firmware/esp32/build/metech_capture.bin.sha256
