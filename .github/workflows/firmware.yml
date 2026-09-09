@@ -13,7 +13,7 @@ jobs:
         working-directory: firmware/esp32
     steps:
       - uses: actions/checkout@v4
-      - run: idf.py build
+      - run: . /opt/esp/idf/export.sh && idf.py build
       - uses: actions/upload-artifact@v4
         with:
           name: metechcam-firmware

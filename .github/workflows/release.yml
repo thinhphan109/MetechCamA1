@@ -12,7 +12,7 @@ jobs:
         working-directory: firmware/esp32
     steps:
       - uses: actions/checkout@v4
-      - run: idf.py build
+      - run: . /opt/esp/idf/export.sh && idf.py build
       - run: sha256sum build/metech_capture.bin > build/metech_capture.bin.sha256
       - uses: softprops/action-gh-release@v2
         with:
