@@ -1,0 +1,7 @@
+﻿# Caddy reference
+
+3dcam.thinhme.tech {
+    reverse_proxy 127.0.0.1:8080
+}
+
+# Caddy owns TLS. Keep the Python service loopback-only.
