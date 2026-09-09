@@ -103,12 +103,14 @@ class DeviceCheck:
 
     def readonly(self) -> None:
         status = self.json_get("/api/status")
-        self.require(status, {"width": int, "height": int, "captures": int, "wifi": str, "ip": str, "ssid": str, "ap": dict, "lan": dict, "sd": str, "sd_ready": bool, "saved": int, "images": int, "sd_free_bytes": int, "sd_total_bytes": int, "estimated_images_left": int, "preview": dict}, "/api/status")
+        self.require(status, {"width": int, "height": int, "captures": int, "wifi": str, "ip": str, "ssid": str, "ap": dict, "lan": dict, "sd": str, "sd_ready": bool, "sd_retry_count": int, "sd_last_retry_s": int, "saved": int, "images": int, "sd_free_bytes": int, "sd_total_bytes": int, "estimated_images_left": int, "preview": dict}, "/api/status")
         self.require(status["ap"], {"ssid": str, "ip": str}, "/api/status.ap")
         self.require(status["lan"], {"state": str, "ssid": str, "ip": str}, "/api/status.lan")
         self.require(status["preview"], {"mode": str, "delay_ms": int, "fps_x10": int}, "/api/status.preview")
         if status["sd_free_bytes"] > status["sd_total_bytes"]:
             raise CheckFailure("/api/status: storage free bytes exceed total bytes")
+        if status["sd_retry_count"] < 1 or status["sd_last_retry_s"] > status["uptime_s"]:
+            raise CheckFailure("/api/status: invalid SD retry telemetry")
         self.require(self.json_get("/api/timelapse"), {"active": bool, "interval_s": int, "limit": int, "taken": int, "next_s": int, "state": str, "error": str}, "/api/timelapse")
         events = self.json_get("/api/events")
         if not isinstance(events.get("events"), list):
