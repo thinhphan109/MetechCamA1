@@ -212,11 +212,6 @@ static void configure_camera(sensor_t *sensor) {
     sensor->set_framesize(sensor, FRAMESIZE_SXGA);
 }
 
-static void nvs_read_string(const char *key, char *out, size_t size) {
-    nvs_handle_t nvs; size_t required = size; out[0] = 0;
-    if (nvs_open("metech", NVS_READONLY, &nvs) == ESP_OK) { nvs_get_str(nvs, key, out, &required); nvs_close(nvs); }
-}
-
 static esp_err_t nvs_save_wifi(const char *ssid, const char *password) {
     nvs_handle_t nvs; esp_err_t err = nvs_open("metech", NVS_READWRITE, &nvs);
     if (err != ESP_OK) return err;
@@ -240,13 +235,6 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
-static void connect_home_wifi(void) {
-    char password[65]; nvs_read_string("wifi_ssid", wifi_ssid, sizeof(wifi_ssid)); nvs_read_string("wifi_pass", password, sizeof(password));
-    if (!wifi_ssid[0]) return;
-    wifi_config_t config = {0}; strcpy((char *)config.sta.ssid, wifi_ssid); strcpy((char *)config.sta.password, password);
-    esp_wifi_set_config(WIFI_IF_STA, &config); strcpy(wifi_state, "connecting"); esp_wifi_connect();
-}
-
 static void start_wifi(void) {
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) { ESP_ERROR_CHECK(nvs_flash_erase()); err = nvs_flash_init(); }
@@ -257,8 +245,9 @@ static void start_wifi(void) {
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event, NULL, NULL));
     wifi_config_t ap = { .ap = { .channel = METECH_AP_CHANNEL, .max_connection = 4, .authmode = WIFI_AUTH_WPA2_PSK } };
     strcpy((char *)ap.ap.ssid, METECH_AP_SSID); strcpy((char *)ap.ap.password, METECH_AP_PASSWORD); ap.ap.ssid_len = strlen(METECH_AP_SSID);
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA)); ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap)); ESP_ERROR_CHECK(esp_wifi_start());
-    esp_netif_ip_info_t info; if(esp_netif_get_ip_info(ap_netif,&info)==ESP_OK)snprintf(ap_ip,sizeof(ap_ip),IPSTR,IP2STR(&info.ip)); event_add("Recovery AP started"); connect_home_wifi(); ESP_LOGI(TAG, "Recovery Wi-Fi %s: http://%s/", METECH_AP_SSID,ap_ip);
+    // ponytail: boot recovery AP only to prevent stale STA credentials/APSTA radio contention from making provisioning unreachable; POST /api/wifi transitions to APSTA for the current session.
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP)); ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap)); ESP_ERROR_CHECK(esp_wifi_start());
+    esp_netif_ip_info_t info; if(esp_netif_get_ip_info(ap_netif,&info)==ESP_OK)snprintf(ap_ip,sizeof(ap_ip),IPSTR,IP2STR(&info.ip)); event_add("Recovery AP started"); strcpy(wifi_state, "recovery"); ESP_LOGI(TAG, "Recovery Wi-Fi %s: http://%s/setup", METECH_AP_SSID,ap_ip);
 }
 
 static bool camera_file_name(const char *name, const char *extension, uint32_t *sequence) {
@@ -415,7 +404,7 @@ static esp_err_t image_handler(httpd_req_t *r) {
     return httpd_resp_send_chunk(r, NULL, 0);
 }
 static int form_value(const char *body, const char *key, char *out, size_t size) { const char *p=strstr(body,key); if(!p || strncmp(p+strlen(key),"=",1))return 0; p+=strlen(key)+1; size_t n=0; while(*p&&*p!='&'&&n+1<size){if(*p=='+')out[n++]=' ';else out[n++]=*p++;}out[n]=0;return n>0; }
-static esp_err_t wifi_handler(httpd_req_t *r) { char body[160]={0},ssid[33]={0},pass[65]={0}; if(r->content_len>=sizeof(body)||httpd_req_recv(r,body,r->content_len)<=0||!form_value(body,"ssid",ssid,sizeof(ssid))||!form_value(body,"password",pass,sizeof(pass)))return httpd_resp_send_err(r,HTTPD_400_BAD_REQUEST,"Invalid Wi-Fi details"); esp_err_t e=nvs_save_wifi(ssid,pass); if(e==ESP_OK){strcpy(wifi_ssid,ssid);wifi_config_t c={0};strcpy((char*)c.sta.ssid,ssid);strcpy((char*)c.sta.password,pass);esp_wifi_set_config(WIFI_IF_STA,&c);strcpy(wifi_state,"connecting");esp_wifi_connect();} return httpd_resp_sendstr(r,e==ESP_OK?"Saved; connecting":"Could not save"); }
+static esp_err_t wifi_handler(httpd_req_t *r) { char body[160]={0},ssid[33]={0},pass[65]={0}; if(r->content_len>=sizeof(body)||httpd_req_recv(r,body,r->content_len)<=0||!form_value(body,"ssid",ssid,sizeof(ssid))||!form_value(body,"password",pass,sizeof(pass)))return httpd_resp_send_err(r,HTTPD_400_BAD_REQUEST,"Invalid Wi-Fi details"); esp_err_t e=nvs_save_wifi(ssid,pass); if(e==ESP_OK){strcpy(wifi_ssid,ssid);wifi_config_t c={0};strcpy((char*)c.sta.ssid,ssid);strcpy((char*)c.sta.password,pass);esp_wifi_set_mode(WIFI_MODE_APSTA);esp_wifi_set_config(WIFI_IF_STA,&c);strcpy(wifi_state,"connecting");esp_wifi_connect();} return httpd_resp_sendstr(r,e==ESP_OK?"Saved; connecting":"Could not save"); }
 static void wifi_scan_task(void *arg) {
     // ponytail: passive scans trade discovery speed for keeping AP/STA service stable; add channel hints when provisioning needs faster scans.
     wifi_scan_config_t config = {.scan_type = WIFI_SCAN_TYPE_PASSIVE, .show_hidden = false, .scan_time.passive = 120};
